@@ -11,7 +11,8 @@ export class RecentsService {
    * Get recent items for a user, ordered by last accessed time.
    * Limits to 20 results, includes search support.
    */
-  async getRecent(userId: string, search?: string, limit = 20) {
+  async getRecent(userId: string, search?: string, limit: any = 20) {
+    const take = typeof limit === 'string' ? parseInt(limit, 10) : (limit || 20);
     const items = await this.prisma.recentItem.findMany({
       where: { userId },
       include: {
@@ -31,7 +32,7 @@ export class RecentsService {
         },
       },
       orderBy: { accessedAt: 'desc' },
-      take: limit,
+      take,
     });
 
     const results = items.map((item) => ({

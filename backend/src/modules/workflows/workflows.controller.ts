@@ -26,7 +26,7 @@ export class WorkflowsController {
   @ApiOperation({ summary: 'Add a status to a workflow' })
   async addStatus(
     @Param('workflowId') workflowId: string,
-    @Body() data: { name: string; slug: string; color: string; category: string },
+    @Body() data: { name: string; slug?: string; color?: string; category?: string },
   ) {
     return this.workflowsService.addStatus(workflowId, data);
   }

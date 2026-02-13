@@ -25,7 +25,7 @@ export default function BacklogPage() {
     try {
       const [sprintRes, taskRes] = await Promise.all([
         api.get(`/spaces/${currentSpace.id}/sprints`),
-        api.get(`/tasks?spaceId=${currentSpace.id}&sprintId=`), // backlog (no sprint)
+        api.get(`/tasks`, { params: { spaceId: currentSpace.id, sprintId: 'backlog' } }),
       ]);
       setSprints(sprintRes.data);
       setBacklogTasks(taskRes.data.items || []);
@@ -238,10 +238,13 @@ function SprintSection({
 
   return (
     <div className="card overflow-hidden">
-      {/* Header */}
-      <button
+      {/* Header — uses div role="button" to avoid nested <button> hydration error */}
+      <div
+        role="button"
+        tabIndex={0}
         onClick={onToggle}
-        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors"
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
+        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors cursor-pointer select-none"
       >
         {expanded ? (
           <ChevronDown className="w-4 h-4 text-gray-400" />
@@ -269,7 +272,7 @@ function SprintSection({
             </button>
           )}
         </div>
-      </button>
+      </div>
 
       {/* Tasks */}
       {expanded && (
@@ -345,9 +348,12 @@ function BacklogSection({
 }) {
   return (
     <div className="card overflow-hidden">
-      <button
+      <div
+        role="button"
+        tabIndex={0}
         onClick={onToggle}
-        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors"
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
+        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors cursor-pointer select-none"
       >
         {expanded ? (
           <ChevronDown className="w-4 h-4 text-gray-400" />
@@ -356,7 +362,7 @@ function BacklogSection({
         )}
         <span className="font-semibold text-gray-700">Backlog</span>
         <span className="text-xs text-gray-400">{tasks.length} issues</span>
-      </button>
+      </div>
 
       {expanded && (
         <div className="border-t border-gray-100">
@@ -407,9 +413,12 @@ function BacklogSection({
 
 function BacklogTaskRow({ task, onClick }: { task: Task; onClick: () => void }) {
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
-      className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors border-t border-gray-50 text-left"
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
+      className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 transition-colors border-t border-gray-50 text-left cursor-pointer"
     >
       <GripVertical className="w-4 h-4 text-gray-300 flex-shrink-0 cursor-grab" />
       <span className="text-sm flex-shrink-0">{issueTypeConfig[task.type]?.icon}</span>
@@ -438,6 +447,6 @@ function BacklogTaskRow({ task, onClick }: { task: Task; onClick: () => void }) 
           {getInitials(task.assignee.displayName)}
         </div>
       )}
-    </button>
+    </div>
   );
 }

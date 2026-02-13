@@ -4,19 +4,23 @@ import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
 import { MoveTaskDto } from './dto/move-task.dto';
 import { Prisma, PrismaClient } from '@prisma/client';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 
 type TxClient = Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
 
 @Injectable()
 export class TasksService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtime: RealtimeGateway,
+  ) {}
 
   /**
    * Create a new task with auto-generated key (e.g., SCRUM-3).
    * Uses a transaction to safely increment the per-space task counter.
    */
   async create(dto: CreateTaskDto, reporterId: string) {
-    return this.prisma.$transaction(async (tx: TxClient) => {
+    const task = await this.prisma.$transaction(async (tx: TxClient) => {
       // Get or compute the next task number for this space
       const lastTask = await tx.task.findFirst({
         where: { spaceId: dto.spaceId },
@@ -48,7 +52,7 @@ export class TasksService {
           statusId: dto.statusId,
           reporterId,
           assigneeId: dto.assigneeId,
-          sprintId: dto.sprintId,
+          sprintId: dto.sprintId || null,
           parentId: dto.parentId,
           title: dto.title,
           description: dto.description,
@@ -68,6 +72,21 @@ export class TasksService {
         },
       });
     });
+
+    // Log creation activity (outside transaction for simplicity)
+    await this.prisma.activity.create({
+      data: {
+        taskId: task.id,
+        userId: reporterId,
+        action: 'CREATED',
+        field: 'task',
+      },
+    }).catch(() => {}); // non-critical, don't fail task creation
+
+    // Broadcast via WebSocket
+    this.realtime.emitTaskCreated(dto.spaceId, task);
+
+    return task;
   }
 
   async findById(id: string) {
@@ -154,6 +173,16 @@ export class TasksService {
         newValue: dto.priority,
       });
     }
+    if (dto.sprintId !== undefined && dto.sprintId !== existing.sprintId) {
+      activities.push({
+        taskId: id,
+        userId,
+        action: 'MOVED',
+        field: 'sprintId',
+        oldValue: existing.sprintId || 'backlog',
+        newValue: dto.sprintId || 'backlog',
+      });
+    }
     if (dto.title || dto.description !== undefined || dto.storyPoints !== undefined || dto.dueDate !== undefined) {
       activities.push({
         taskId: id,
@@ -189,6 +218,9 @@ export class TasksService {
         await tx.activity.createMany({ data: activities });
       }
 
+      // Broadcast via WebSocket
+      this.realtime.emitTaskUpdated(existing.spaceId, task.id, task);
+
       return task;
     });
   }
@@ -200,11 +232,14 @@ export class TasksService {
   async moveTask(dto: MoveTaskDto, userId: string) {
     const { taskId, targetStatusId, targetPosition } = dto;
 
-    return this.prisma.$transaction(async (tx: TxClient) => {
+    // Pre-fetch to get spaceId for WebSocket broadcast
+    const existingTask = await this.prisma.task.findUnique({ where: { id: taskId }, select: { statusId: true, spaceId: true } });
+    if (!existingTask) throw new NotFoundException('Task not found');
+    const oldStatusId = existingTask.statusId;
+
+    const result = await this.prisma.$transaction(async (tx: TxClient) => {
       const task = await tx.task.findUnique({ where: { id: taskId } });
       if (!task) throw new NotFoundException('Task not found');
-
-      const oldStatusId = task.statusId;
 
       // Calculate new position using fractional indexing
       let newPosition: number;
@@ -276,10 +311,25 @@ export class TasksService {
 
       return updated;
     });
+
+    // Broadcast via WebSocket
+    this.realtime.emitTaskMoved(result.spaceId, {
+      taskId,
+      fromStatusId: oldStatusId,
+      toStatusId: targetStatusId,
+      position: result.position,
+      task: result,
+    });
+
+    return result;
   }
 
   /**
    * List tasks with cursor-based pagination.
+   * 
+   * Key fix: sprintId='' (empty string) means "backlog" = tasks with sprintId IS NULL
+   * sprintId=undefined means "don't filter by sprint"
+   * sprintId='<uuid>' means "filter to that sprint"
    */
   async listTasks(params: {
     spaceId: string;
@@ -292,10 +342,25 @@ export class TasksService {
     cursor?: string;
     limit?: number;
   }) {
-    const { spaceId, sprintId, statusId, assigneeId, type, priority, search, cursor, limit = 50 } = params;
+    const { spaceId, sprintId, statusId, assigneeId, type, priority, search, cursor } = params;
+    const limit = typeof params.limit === 'string' ? parseInt(params.limit, 10) : (params.limit || 50);
+
+    if (!spaceId) {
+      return { items: [], nextCursor: null, hasMore: false };
+    }
 
     const where: Prisma.TaskWhereInput = { spaceId };
-    if (sprintId) where.sprintId = sprintId;
+
+    // Handle sprint filtering:
+    // - sprintId is exactly '' (empty string) → backlog (where sprintId IS NULL)
+    // - sprintId is a UUID string → filter to that sprint
+    // - sprintId is undefined → no sprint filter (all tasks)
+    if (sprintId === '' || sprintId === 'null' || sprintId === 'backlog') {
+      where.sprintId = null;
+    } else if (sprintId) {
+      where.sprintId = sprintId;
+    }
+
     if (statusId) where.statusId = statusId;
     if (assigneeId) where.assigneeId = assigneeId;
     if (type) where.type = type as any;
@@ -311,7 +376,7 @@ export class TasksService {
       where,
       include: {
         assignee: { select: { id: true, displayName: true, avatarUrl: true } },
-        status: { select: { id: true, name: true, slug: true, color: true } },
+        status: { select: { id: true, name: true, slug: true, color: true, category: true } },
         taskLabels: { include: { label: true } },
       },
       orderBy: { position: 'asc' },
@@ -327,7 +392,12 @@ export class TasksService {
   }
 
   async delete(id: string) {
-    return this.prisma.task.delete({ where: { id } });
+    const task = await this.prisma.task.findUnique({ where: { id }, select: { spaceId: true } });
+    const result = await this.prisma.task.delete({ where: { id } });
+    if (task) {
+      this.realtime.emitTaskDeleted(task.spaceId, id);
+    }
+    return result;
   }
 
   async addLabel(taskId: string, labelId: string) {

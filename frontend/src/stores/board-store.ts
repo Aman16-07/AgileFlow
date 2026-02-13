@@ -4,6 +4,7 @@ import type { BoardColumn, Task } from '@/types';
 
 interface BoardState {
   columns: BoardColumn[];
+  workflowId: string | null;
   isLoading: boolean;
 
   fetchBoardView: (spaceId: string, sprintId?: string) => Promise<void>;
@@ -16,7 +17,7 @@ interface BoardState {
     newIndex: number,
   ) => void;
 
-  // Persist move to backend
+  // Persist move to backend (with rollback on failure)
   persistTaskMove: (
     taskId: string,
     targetStatusId: string,
@@ -31,10 +32,14 @@ interface BoardState {
 
   // Remove task
   removeTask: (taskId: string) => void;
+
+  // Add a new column (workflow status)
+  addColumn: (spaceId: string, name: string) => Promise<void>;
 }
 
 export const useBoardStore = create<BoardState>((set, get) => ({
   columns: [],
+  workflowId: null,
   isLoading: false,
 
   fetchBoardView: async (spaceId, sprintId) => {
@@ -42,7 +47,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     try {
       const params = sprintId ? `?sprintId=${sprintId}` : '';
       const { data } = await api.get(`/spaces/${spaceId}/boards/view${params}`);
-      set({ columns: data.columns, isLoading: false });
+      set({ columns: data.columns, workflowId: data.workflow?.id || null, isLoading: false });
     } catch {
       set({ isLoading: false });
     }
@@ -86,11 +91,14 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   },
 
   persistTaskMove: async (taskId, targetStatusId, targetPosition) => {
+    // Snapshot current state for rollback
+    const snapshot = get().columns;
     try {
       await api.patch('/tasks/move', { taskId, targetStatusId, targetPosition });
     } catch (error) {
-      // If persist fails, refetch the board to reset state
-      console.error('Failed to persist task move:', error);
+      // Rollback to pre-move state on failure
+      console.error('Failed to persist task move, rolling back:', error);
+      set({ columns: snapshot });
     }
   },
 
@@ -124,5 +132,25 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       }));
       return { columns };
     });
+  },
+
+  addColumn: async (spaceId, name) => {
+    const { workflowId } = get();
+    if (!workflowId) return;
+    try {
+      const { data } = await api.post(`/spaces/${spaceId}/workflows/${workflowId}/statuses`, { name });
+      const newColumn: BoardColumn = {
+        id: data.id,
+        name: data.name,
+        slug: data.slug,
+        color: data.color || '#6B7280',
+        position: data.position,
+        category: data.category || 'TODO',
+        tasks: [],
+      };
+      set((state) => ({ columns: [...state.columns, newColumn] }));
+    } catch (error) {
+      console.error('Failed to add column:', error);
+    }
   },
 }));

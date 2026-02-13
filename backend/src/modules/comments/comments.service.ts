@@ -1,11 +1,16 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 
 @Injectable()
 export class CommentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtime: RealtimeGateway,
+  ) {}
 
-  async findByTask(taskId: string, cursor?: string, limit = 20) {
+  async findByTask(taskId: string, cursor?: string, limit: any = 20) {
+    const take = typeof limit === 'string' ? parseInt(limit, 10) : (limit || 20);
     const comments = await this.prisma.comment.findMany({
       where: { taskId, parentId: null }, // Top-level comments only
       include: {
@@ -18,12 +23,12 @@ export class CommentsService {
         },
       },
       orderBy: { createdAt: 'desc' },
-      take: limit + 1,
+      take: take + 1,
       ...(cursor && { cursor: { id: cursor }, skip: 1 }),
     });
 
-    const hasMore = comments.length > limit;
-    const items = hasMore ? comments.slice(0, limit) : comments;
+    const hasMore = comments.length > take;
+    const items = hasMore ? comments.slice(0, take) : comments;
 
     return { items, nextCursor: hasMore ? items[items.length - 1].id : null, hasMore };
   }
@@ -45,6 +50,9 @@ export class CommentsService {
         metadata: JSON.stringify({ commentId: comment.id }),
       },
     });
+
+    // Broadcast via WebSocket
+    this.realtime.emitCommentAdded(taskId, comment);
 
     return comment;
   }

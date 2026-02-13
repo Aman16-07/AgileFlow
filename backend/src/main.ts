@@ -13,7 +13,7 @@ async function bootstrap() {
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
-      forbidNonWhitelisted: true,
+      forbidNonWhitelisted: false,
       transform: true,
       transformOptions: { enableImplicitConversion: true },
     }),
@@ -28,8 +28,10 @@ async function bootstrap() {
     credentials: true,
   });
 
-  // API prefix
-  app.setGlobalPrefix('api/v1');
+  // API prefix — exclude health routes
+  app.setGlobalPrefix('api/v1', {
+    exclude: ['/', 'health'],
+  });
 
   // Swagger
   const swaggerConfig = new DocumentBuilder()

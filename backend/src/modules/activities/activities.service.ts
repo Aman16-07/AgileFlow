@@ -5,19 +5,20 @@ import { PrismaService } from '../../prisma/prisma.service';
 export class ActivitiesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getByTask(taskId: string, cursor?: string, limit = 20) {
+  async getByTask(taskId: string, cursor?: string, limit: any = 20) {
+    const take = typeof limit === 'string' ? parseInt(limit, 10) : (limit || 20);
     const activities = await this.prisma.activity.findMany({
       where: { taskId },
       include: {
         user: { select: { id: true, displayName: true, avatarUrl: true } },
       },
       orderBy: { createdAt: 'desc' },
-      take: limit + 1,
+      take: take + 1,
       ...(cursor && { cursor: { id: cursor }, skip: 1 }),
     });
 
-    const hasMore = activities.length > limit;
-    const items = hasMore ? activities.slice(0, limit) : activities;
+    const hasMore = activities.length > take;
+    const items = hasMore ? activities.slice(0, take) : activities;
     return { items, nextCursor: hasMore ? items[items.length - 1].id : null, hasMore };
   }
 

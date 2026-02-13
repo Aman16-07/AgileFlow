@@ -53,7 +53,7 @@ export function TaskDetailPanel() {
     if (!selectedTaskId) return;
     try {
       const { data } = await api.get(`/tasks/${selectedTaskId}/comments`);
-      setComments(data.data || []);
+      setComments(data.items || data || []);
     } catch (err) {
       console.error('Failed to fetch comments', err);
     }
@@ -63,7 +63,7 @@ export function TaskDetailPanel() {
     if (!selectedTaskId) return;
     try {
       const { data } = await api.get(`/activities/task/${selectedTaskId}`);
-      setActivities(data || []);
+      setActivities(data.items || data || []);
     } catch (err) {
       console.error('Failed to fetch activities', err);
     }

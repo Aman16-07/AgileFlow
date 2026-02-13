@@ -24,6 +24,13 @@ export class BoardsService {
   /**
    * Get full board data with columns (workflow statuses) and tasks.
    * This is the main query for the Kanban view.
+   *
+   * Board logic:
+   * - If sprintId is provided, show only tasks in that sprint
+   * - If no sprintId, find the ACTIVE sprint and show its tasks
+   * - If no active sprint, show all tasks (regardless of sprint)
+   *
+   * This ensures the board always has something to display.
    */
   async getBoardView(spaceId: string, sprintId?: string) {
     // Get workflow statuses as columns
@@ -36,16 +43,30 @@ export class BoardsService {
 
     if (!workflow) throw new NotFoundException('No workflow found for this space');
 
-    // Get tasks for each status, optionally filtered by sprint
+    // Determine which tasks to show
     const taskWhere: any = { spaceId };
-    if (sprintId) taskWhere.sprintId = sprintId;
+
+    if (sprintId) {
+      // Explicit sprint filter
+      taskWhere.sprintId = sprintId;
+    } else {
+      // Auto-detect: try active sprint first
+      const activeSprint = await this.prisma.sprint.findFirst({
+        where: { spaceId, status: 'ACTIVE' },
+        select: { id: true },
+      });
+      if (activeSprint) {
+        taskWhere.sprintId = activeSprint.id;
+      }
+      // If no active sprint, show all tasks (no sprintId filter)
+    }
 
     const tasks = await this.prisma.task.findMany({
       where: taskWhere,
       include: {
         assignee: { select: { id: true, displayName: true, avatarUrl: true } },
         taskLabels: { include: { label: true } },
-        status: { select: { id: true, name: true, slug: true, color: true } },
+        status: { select: { id: true, name: true, slug: true, color: true, category: true } },
       },
       orderBy: { position: 'asc' },
     });

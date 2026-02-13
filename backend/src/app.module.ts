@@ -15,6 +15,8 @@ import { RecentsModule } from './modules/recents/recents.module';
 import { ActivitiesModule } from './modules/activities/activities.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
+import { AiModule } from './modules/ai/ai.module';
+import { HealthController } from './health.controller';
 
 @Module({
   imports: [
@@ -34,6 +36,8 @@ import { RealtimeModule } from './modules/realtime/realtime.module';
     ActivitiesModule,
     DashboardModule,
     RealtimeModule,
+    AiModule,
   ],
+  controllers: [HealthController],
 })
 export class AppModule {}

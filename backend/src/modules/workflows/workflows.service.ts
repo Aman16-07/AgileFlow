@@ -21,7 +21,7 @@ export class WorkflowsService {
     return workflow.statuses;
   }
 
-  async addStatus(workflowId: string, data: { name: string; slug: string; color: string; category: string }) {
+  async addStatus(workflowId: string, data: { name: string; slug?: string; color?: string; category?: string }) {
     // Get max position
     const maxPos = await this.prisma.workflowStatus.findFirst({
       where: { workflowId },
@@ -30,8 +30,18 @@ export class WorkflowsService {
     });
     const position = (maxPos?.position ?? -1) + 1;
 
+    // Auto-generate slug if not provided
+    const slug = data.slug || data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
     return this.prisma.workflowStatus.create({
-      data: { ...data, workflowId, position },
+      data: {
+        name: data.name,
+        slug,
+        color: data.color || '#6B7280',
+        category: data.category || 'TODO',
+        workflowId,
+        position,
+      },
     });
   }
 

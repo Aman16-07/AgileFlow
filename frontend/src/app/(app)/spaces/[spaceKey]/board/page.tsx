@@ -9,6 +9,7 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  useDroppable,
   type DragStartEvent,
   type DragEndEvent,
   type DragOverEvent,
@@ -31,11 +32,13 @@ import { api } from '@/lib/api';
 
 export default function BoardPage() {
   const { currentSpace } = useSpaceStore();
-  const { columns, isLoading, fetchBoardView, moveTaskOptimistic, persistTaskMove, addTask, updateTaskInBoard, removeTask } = useBoardStore();
+  const { columns, isLoading, fetchBoardView, moveTaskOptimistic, persistTaskMove, addTask, updateTaskInBoard, removeTask, addColumn } = useBoardStore();
   const { openTaskDetail } = useUIStore();
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [createTaskColumn, setCreateTaskColumn] = useState<string | null>(null);
   const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [addingColumn, setAddingColumn] = useState(false);
+  const [newColumnName, setNewColumnName] = useState('');
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -85,6 +88,51 @@ export default function BoardPage() {
     }
   }, [columns]);
 
+  // Cross-container: move item between SortableContexts during drag
+  const handleDragOver = useCallback(
+    (event: DragOverEvent) => {
+      const { active, over } = event;
+      if (!over) return;
+
+      const taskId = active.id as string;
+      const overId = over.id as string;
+
+      // Find which column the dragged task is currently in
+      let sourceColumnId: string | null = null;
+      for (const col of columns) {
+        if (col.tasks.find((t) => t.id === taskId)) {
+          sourceColumnId = col.id;
+          break;
+        }
+      }
+      if (!sourceColumnId) return;
+
+      // Determine target column
+      let targetColumnId: string | null = null;
+      const isOverColumn = columns.find((c) => c.id === overId);
+      if (isOverColumn) {
+        targetColumnId = overId;
+      } else {
+        for (const col of columns) {
+          if (col.tasks.find((t) => t.id === overId)) {
+            targetColumnId = col.id;
+            break;
+          }
+        }
+      }
+      if (!targetColumnId || sourceColumnId === targetColumnId) return;
+
+      // Move the task optimistically into the target column during drag
+      const targetCol = columns.find((c) => c.id === targetColumnId);
+      const overIndex = isOverColumn
+        ? (targetCol?.tasks.length ?? 0)
+        : (targetCol?.tasks.findIndex((t) => t.id === overId) ?? 0);
+
+      moveTaskOptimistic(taskId, sourceColumnId, targetColumnId, Math.max(0, overIndex));
+    },
+    [columns, moveTaskOptimistic],
+  );
+
   const handleDragEnd = useCallback(
     async (event: DragEndEvent) => {
       const { active, over } = event;
@@ -95,47 +143,42 @@ export default function BoardPage() {
       const taskId = active.id as string;
       const overId = over.id as string;
 
-      // Determine target column and index
-      let targetColumnId: string | null = null;
-      let targetIndex = 0;
+      // Read LATEST columns from store (not stale closure)
+      const latestColumns = useBoardStore.getState().columns;
 
-      // Check if dropped on a column header
-      const isColumn = columns.find((c) => c.id === overId);
-      if (isColumn) {
-        targetColumnId = overId;
-        targetIndex = isColumn.tasks.length;
-      } else {
-        // Dropped on another task — find its column
-        for (const col of columns) {
-          const idx = col.tasks.findIndex((t) => t.id === overId);
-          if (idx !== -1) {
-            targetColumnId = col.id;
-            targetIndex = idx;
-            break;
-          }
-        }
-      }
-
-      if (!targetColumnId) return;
-
-      // Find source column
-      let sourceColumnId: string | null = null;
-      for (const col of columns) {
-        if (col.tasks.find((t) => t.id === taskId)) {
-          sourceColumnId = col.id;
+      // Find the column+index the task is now in (after onDragOver moved it)
+      let finalColumnId: string | null = null;
+      let finalIndex = 0;
+      for (const col of latestColumns) {
+        const idx = col.tasks.findIndex((t) => t.id === taskId);
+        if (idx !== -1) {
+          finalColumnId = col.id;
+          finalIndex = idx;
           break;
         }
       }
 
-      if (!sourceColumnId) return;
+      if (!finalColumnId) return;
 
-      // Optimistic update
-      moveTaskOptimistic(taskId, sourceColumnId, targetColumnId, targetIndex);
+      // Handle reorder within same column if dropped on another task
+      const isOverColumn = latestColumns.find((c) => c.id === overId);
+      if (!isOverColumn) {
+        // Dropped on a task — find its index for reorder
+        const col = latestColumns.find((c) => c.id === finalColumnId);
+        if (col) {
+          const overIdx = col.tasks.findIndex((t) => t.id === overId);
+          if (overIdx !== -1 && overIdx !== finalIndex) {
+            // Reorder within column via optimistic update
+            moveTaskOptimistic(taskId, finalColumnId, finalColumnId, overIdx);
+            finalIndex = overIdx;
+          }
+        }
+      }
 
       // Persist to backend
-      await persistTaskMove(taskId, targetColumnId, targetIndex);
+      await persistTaskMove(taskId, finalColumnId, finalIndex);
     },
-    [columns, moveTaskOptimistic, persistTaskMove],
+    [moveTaskOptimistic, persistTaskMove],
   );
 
   const handleCreateTask = async (columnId: string) => {
@@ -153,6 +196,13 @@ export default function BoardPage() {
     } catch (err) {
       console.error('Failed to create task:', err);
     }
+  };
+
+  const handleAddColumn = async () => {
+    if (!newColumnName.trim() || !currentSpace) return;
+    await addColumn(currentSpace.id, newColumnName.trim());
+    setNewColumnName('');
+    setAddingColumn(false);
   };
 
   if (isLoading || !currentSpace) {
@@ -173,6 +223,7 @@ export default function BoardPage() {
         sensors={sensors}
         collisionDetection={closestCorners}
         onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
       >
         <div className="flex gap-4 items-start min-w-max">
@@ -189,6 +240,37 @@ export default function BoardPage() {
               onCreateTask={() => handleCreateTask(column.id)}
             />
           ))}
+
+          {/* Add Column Button */}
+          <div className="w-72 flex-shrink-0">
+            {addingColumn ? (
+              <div className="bg-white rounded-xl border border-brand-300 p-3 shadow-sm">
+                <input
+                  autoFocus
+                  value={newColumnName}
+                  onChange={(e) => setNewColumnName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleAddColumn();
+                    if (e.key === 'Escape') { setAddingColumn(false); setNewColumnName(''); }
+                  }}
+                  placeholder="Column name..."
+                  className="w-full text-sm border-none outline-none placeholder-gray-400"
+                />
+                <div className="flex items-center gap-2 mt-2">
+                  <button onClick={handleAddColumn} className="btn-primary text-xs py-1 px-3">Add</button>
+                  <button onClick={() => { setAddingColumn(false); setNewColumnName(''); }} className="btn-ghost text-xs">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setAddingColumn(true)}
+                className="w-full flex items-center justify-center gap-2 px-3 py-3 text-sm text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-xl border-2 border-dashed border-gray-200 hover:border-gray-300 transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Add column</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Drag overlay — the floating card while dragging */}
@@ -223,6 +305,9 @@ function KanbanColumn({
 }) {
   const taskIds = column.tasks.map((t) => t.id);
 
+  // Register column as a droppable target so empty columns can receive drops
+  const { setNodeRef: setDroppableRef } = useDroppable({ id: column.id });
+
   return (
     <div className="w-72 flex-shrink-0">
       {/* Column Header */}
@@ -234,7 +319,7 @@ function KanbanColumn({
 
       {/* Tasks */}
       <SortableContext items={taskIds} strategy={verticalListSortingStrategy} id={column.id}>
-        <div className="space-y-2 min-h-[80px] rounded-xl bg-gray-50/50 p-2">
+        <div ref={setDroppableRef} className="space-y-2 min-h-[80px] rounded-xl bg-gray-50/50 p-2">
           {column.tasks.map((task) => (
             <SortableTaskCard key={task.id} task={task} onClick={() => onTaskClick(task.id)} />
           ))}
